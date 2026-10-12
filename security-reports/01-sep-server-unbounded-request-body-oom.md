@@ -23,7 +23,7 @@ Authenticated JSON endpoints (any wallet user with a valid SEP-10 token, which i
 * `PATCH /sep6/transactions/{id}` — values of `required_info_updates` are stored verbatim.
 * `PUT /sep12/customer` (JSON) and `POST /sep24/transactions/{deposit,withdraw}/interactive` (JSON `HashMap<String,String>`).
 
-A single attacker can therefore make the JVM allocate an arbitrarily large `String`/`StringBuilder` per connection. With the default container heap (the Docker image runs with no `-Xmx` override) a handful of concurrent connections streaming a few hundred MB each is enough to trigger `java.lang.OutOfMemoryError` in the SEP server, taking SEP-10/SEP-45 authentication and every wallet-facing SEP endpoint offline until the process is restarted. This is the same bug class as ANCHOR-1313/ANCHOR-1283 which were accepted for the Platform server, but on the server that is *meant* to be public.
+A single attacker can therefore make the JVM allocate an arbitrarily large `String`/`StringBuilder` per connection, bounded only by the heap. The request is cheap for the attacker (a streamed, chunked body generated on the fly) and expensive for the server (every byte is copied into a growing `StringBuilder`, then into a `String`): in the test below ~36 MB uploaded per connection was enough to exhaust a 512 MB heap because three connections were buffering concurrently. This is the same bug class as ANCHOR-1313/ANCHOR-1283, which were accepted and fixed for the Platform server, but on the server that is *meant* to be public.
 
 ### Steps To Reproduce:
 All steps are against a **local** instance (never testnet/pubnet).
@@ -43,8 +43,26 @@ All steps are against a **local** instance (never testnet/pubnet).
             -H 'Content-Type: application/json' -H 'Transfer-Encoding: chunked' --data-binary @-
      ```
      Run 3–4 of these in parallel (`for i in 1 2 3 4; do ( ... ) & done`).
-  4. Observe the SEP server log: `java.lang.OutOfMemoryError: Java heap space` (from `com.google.gson.stream.JsonReader.nextQuotedValue` / `StringBuilder.append`), followed by failed or hanging requests to `GET /auth` and `GET /sep24/info` from a separate client. On a JVM without a heap cap the container is OOM-killed by the kernel instead.
+  4. Observe the SEP server log: `java.lang.OutOfMemoryError: Java heap space` thrown from `com.google.gson.stream.JsonReader.nextQuotedValue` while reading the body; the request is answered with HTTP 500 after the heap is exhausted.
   5. Expected behaviour (what the Platform server does): an immediate `413` with `{"error":"The request body is too large."}` before the body is read into memory.
+
+### Observed output (local build of 4.9.0, `java -Xmx512m -jar anchor-platform-runner-4.9.0.jar --sep-server`, `security-reports/poc/poc_01.sh`):
+```
+worker 3 -> HTTP 500, sent 36173664 bytes in 0.798235s
+worker 2 -> HTTP 500, sent 36042600 bytes in 0.846107s
+worker 1 -> HTTP 500, sent 69070728 bytes in 0.819311s
+--- server log ---
+07:34:42.677 ERROR - o.s.a.u.Log - jakarta.servlet.ServletException: Handler dispatch failed: java.lang.OutOfMemoryError: Java heap space
+Caused by: java.lang.OutOfMemoryError: Java heap space
+	at java.base/java.util.Arrays.copyOf(Arrays.java:3537)
+	at java.base/java.lang.AbstractStringBuilder.ensureCapacityInternal(AbstractStringBuilder.java:228)
+	at java.base/java.lang.StringBuilder.append(StringBuilder.java:233)
+	at com.google.gson.stream.JsonReader.nextQuotedValue(JsonReader.java:1173)
+	at com.google.gson.stream.JsonReader.nextString(JsonReader.java:962)
+	...
+	at org.springframework.http.converter.json.GsonHttpMessageConverter.readInternal(GsonHttpMessageConverter.java:92)
+```
+Sending six such streams continuously for 30 s produced 138 `OutOfMemoryError`s in the server log. For accuracy: in this test Tomcat caught each `OutOfMemoryError` and the process **stayed up**; a concurrent loop of legitimate SEP-10 + SEP-24 flows from the same machine completed 95 flows (0 failures) during the attack versus 295 in the same 30 s without it (attacker and server shared one host, so part of that drop is CPU contention). The demonstrated effect is therefore repeated heap exhaustion and heavy degradation from a trivial, unauthenticated request, plus a hard memory amplification (tens of MB uploaded → whole heap consumed); a hard crash was not observed with this heap size. The fix on the Platform server (ANCHOR-1313) addressed exactly this OOM symptom.
 
 ### Supporting Material:
   * `platform/src/main/java/org/stellar/anchor/platform/component/platform/PlatformServerBeans.java:71-84` (filter registered for Platform server only)
@@ -56,4 +74,4 @@ All steps are against a **local** instance (never testnet/pubnet).
 ## Impact
 
 ### Summary:
-Availability. An unauthenticated remote attacker can exhaust the heap of the public SEP server with a few streamed requests (no flooding, no paid transactions), crashing or wedging SEP-10/SEP-45 authentication and all wallet-facing SEP-6/12/24/31/38 endpoints for every customer of the anchor until the service is restarted. Authenticated variants additionally let one user write unbounded blobs into the anchor's database and event stream (storage exhaustion, downstream business-server impact). CVSS v3.1: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H).
+Availability. An unauthenticated remote attacker can exhaust the heap of the public SEP server with a handful of cheap streamed requests (no flooding, no paid transactions, tens of MB per connection), causing repeated `OutOfMemoryError`s, failed requests and severe degradation of SEP-10/SEP-45 authentication and all wallet-facing SEP-6/12/24/31/38 endpoints for every customer of the anchor; depending on heap sizing and what else is allocating at the moment of exhaustion (DB connections, JWT signing, Kafka producers) this can escalate to a full outage. Authenticated variants additionally let one user write unbounded blobs into the anchor's database and event stream. CVSS v3.1: 5.3–7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L..H); same class as the accepted ANCHOR-1313.

